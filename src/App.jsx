@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// --- 1. 没有任何外部依赖的图标组件 (直接画 SVG) ---
+// --- 1. 图标组件 ---
 const Icon = ({ path, size = 20, className = "" }) => (
   <svg 
     xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" 
@@ -26,7 +26,7 @@ const Icons = {
 
 // --- 2. 核心功能组件 ---
 export default function XhsMarkdownEditor() {
-  const [status, setStatus] = useState('initializing'); // initializing, ready, error
+  const [status, setStatus] = useState('initializing'); 
   const [markdown, setMarkdown] = useState(() => {
     try { return localStorage.getItem('xhs_content') || DEFAULT_MARKDOWN; } catch { return DEFAULT_MARKDOWN; }
   });
@@ -35,9 +35,10 @@ export default function XhsMarkdownEditor() {
   const [showGuides, setShowGuides] = useState(true);
   const [html, setHtml] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [copyLabel, setCopyLabel] = useState('复制'); 
   const previewRef = useRef(null);
 
-  // 3. 注入依赖库 (无需本地安装)
+  // 3. 注入依赖库
   useEffect(() => {
     const loadScript = (src, id) => {
       return new Promise((resolve, reject) => {
@@ -53,49 +54,31 @@ export default function XhsMarkdownEditor() {
 
     const init = async () => {
       try {
-        // Tailwind 已经在 main.jsx 中加载，这里只负责功能库
-        // 加载 Markdown 解析器
         await loadScript('https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js', 'marked-js');
-        // 加载 截图库
         await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js', 'html2canvas-js');
-
         setStatus('ready');
       } catch (err) {
         console.error("资源加载失败", err);
         setStatus('error');
       }
     };
-
     init();
   }, []);
 
-  // 4. 解析 Markdown (智能处理：普通文本保留空行，代码块保持原样)
+  // 4. 解析 Markdown
   useEffect(() => {
     if (status === 'ready' && window.marked) {
-      // 自动保存
       localStorage.setItem('xhs_content', markdown);
       
-      // --- 智能空行逻辑 ---
-      // 为了让“连按回车”产生真实间距，同时不破坏代码块格式
-      // 我们先将文本按代码块（```...```）切分
       const parts = markdown.split(/(```[\s\S]*?```)/g);
-      
       const processed = parts.map(part => {
-        // 如果是代码块，原样返回
         if (part.startsWith('```')) return part;
-        
-        // 如果是普通文本，把连续换行转为 <br>
-        // \n{2,} 表示连续2个或更多换行符
-        return part.replace(/\n{2,}/g, (match) => {
-          // 比如按了3次回车，产生2个空行，match.length=3
-          // 我们需要插入 match.length - 1 个 <br>
-          return '\n' + '<br>'.repeat(match.length - 1) + '\n';
+        return part.replace(/\n{3,}/g, (match) => {
+          return '\n\n' + '<br>'.repeat(match.length - 2) + '\n\n';
         });
       }).join('');
 
-      // 配置 marked: breaks:true 确保单次换行也生效
       window.marked.setOptions({ breaks: true, gfm: true });
-      
       try {
         setHtml(window.marked.parse(processed));
       } catch (e) {
@@ -104,16 +87,16 @@ export default function XhsMarkdownEditor() {
     }
   }, [markdown, status]);
 
-  // 5. 截图功能
+  // 5. 截图核心逻辑
   const capture = async () => {
     if (!previewRef.current || !window.html2canvas) return null;
     const originalGuides = showGuides;
-    setShowGuides(false); // 截图时隐藏参考线
-    await new Promise(r => setTimeout(r, 200)); // 等待重绘
+    setShowGuides(false); 
+    await new Promise(r => setTimeout(r, 200)); 
 
     try {
       const canvas = await window.html2canvas(previewRef.current, {
-        scale: 3, // 高清
+        scale: 3, 
         useCORS: true,
         backgroundColor: null
       });
@@ -122,8 +105,41 @@ export default function XhsMarkdownEditor() {
     } catch (e) {
       console.error(e);
       setShowGuides(originalGuides);
-      alert("生成图片出错");
       return null;
+    }
+  };
+
+  // --- 修复后的复制功能 ---
+  const handleCopy = async () => {
+    setIsProcessing(true);
+    setCopyLabel('处理中...');
+
+    try {
+      // 1. 环境检测：防止在不支持的浏览器中崩溃
+      if (typeof ClipboardItem === 'undefined' || !navigator.clipboard || !navigator.clipboard.write) {
+        throw new Error("当前环境（如StackBlitz预览）不支持直接写入剪贴板，请尝试部署后使用或直接下载。");
+      }
+
+      const canvas = await capture();
+      if (!canvas) throw new Error("生成图片失败");
+
+      // 2. 将 canvas 转为 Blob (使用 Promise 包装以防回调地狱)
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+      if (!blob) throw new Error("图片数据转换失败");
+
+      // 3. 写入剪贴板
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      
+      setCopyLabel('已复制!');
+      setTimeout(() => setCopyLabel('复制'), 2000);
+
+    } catch (err) {
+      console.error("复制失败:", err);
+      // 友好提示，而不是崩溃
+      alert(`无法复制：${err.message}\n\n建议：请使用右侧的【保存】按钮下载图片。`);
+      setCopyLabel('复制');
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -139,7 +155,6 @@ export default function XhsMarkdownEditor() {
       link.href = canvas.toDataURL('image/png');
       link.click();
     } else {
-      // 分割为 3:4 图片
       const pageH = canvas.width * (4/3);
       const totalPages = Math.ceil(canvas.height / pageH);
       for (let i = 0; i < totalPages; i++) {
@@ -147,7 +162,6 @@ export default function XhsMarkdownEditor() {
         c.width = canvas.width;
         c.height = pageH;
         const ctx = c.getContext('2d');
-        // 填充背景
         ctx.fillStyle = THEMES[theme].bgCode;
         ctx.fillRect(0, 0, c.width, c.height);
         ctx.drawImage(canvas, 0, i * pageH, canvas.width, pageH, 0, 0, canvas.width, pageH);
@@ -161,19 +175,13 @@ export default function XhsMarkdownEditor() {
     setIsProcessing(false);
   };
 
-  if (status === 'initializing') {
-    return <div className="flex h-screen items-center justify-center text-gray-500 gap-2">正在初始化引擎...</div>;
-  }
-  
-  if (status === 'error') {
-    return <div className="flex h-screen items-center justify-center text-red-500">网络资源加载失败，请刷新重试</div>;
-  }
+  if (status === 'initializing') return <div className="flex h-screen items-center justify-center text-gray-500 gap-2">正在初始化引擎...</div>;
+  if (status === 'error') return <div className="flex h-screen items-center justify-center text-red-500">网络资源加载失败，请刷新重试</div>;
 
   const currentTheme = THEMES[theme];
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 text-gray-800 font-sans overflow-hidden">
-      {/* 顶部栏 */}
       <header className="flex items-center justify-between px-4 py-3 bg-white border-b shadow-sm z-10 shrink-0">
         <div className="flex items-center gap-2 font-bold text-gray-700">
           <span className="bg-red-500 text-white p-1 rounded"><Icon path={Icons.ImageCircle} /></span>
@@ -184,13 +192,11 @@ export default function XhsMarkdownEditor() {
            <button onClick={() => {if(confirm('清空?')) setMarkdown('')}} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-full" title="清空"><Icon path={Icons.Trash} size={18}/></button>
            <div className="h-6 w-px bg-gray-200"></div>
            
-           {/* 字体大小 */}
            <div className="hidden md:flex items-center gap-2 bg-gray-100 px-2 py-1 rounded">
              <Icon path={Icons.Type} size={14} className="text-gray-500"/>
              <input type="range" min="12" max="24" value={fontSize} onChange={e=>setFontSize(Number(e.target.value))} className="w-20 accent-red-500"/>
            </div>
 
-           {/* 主题切换 */}
            <div className="flex gap-1 bg-gray-100 p-1 rounded">
              {Object.keys(THEMES).map(k => (
                <button key={k} onClick={()=>setTheme(k)} className={`w-6 h-6 rounded border ${theme===k ? 'border-red-500 scale-110' : 'border-transparent'}`} style={{background: THEMES[k].preview}} />
@@ -200,6 +206,11 @@ export default function XhsMarkdownEditor() {
            <button onClick={()=>setShowGuides(!showGuides)} className={`p-2 rounded ${showGuides ? 'text-red-500 bg-red-50' : 'text-gray-400'}`} title="辅助线"><Icon path={Icons.Layout} /></button>
            
            <div className="flex gap-2">
+             <button onClick={handleCopy} disabled={isProcessing} className="flex items-center gap-1 bg-white border border-gray-200 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-50 text-sm">
+               {isProcessing ? <Icon path={Icons.Loader} className="animate-spin"/> : copyLabel === '已复制!' ? <Icon path={Icons.Check}/> : <Icon path={Icons.Copy}/>}
+               <span className="hidden sm:inline">{copyLabel}</span>
+             </button>
+
              <button onClick={()=>handleDownload(false)} disabled={isProcessing} className="flex items-center gap-1 bg-gray-800 text-white px-3 py-1.5 rounded hover:bg-gray-700 text-sm">
                {isProcessing ? <Icon path={Icons.Loader} className="animate-spin"/> : <Icon path={Icons.Download}/>}
                <span className="hidden sm:inline">保存</span>
@@ -212,9 +223,7 @@ export default function XhsMarkdownEditor() {
         </div>
       </header>
 
-      {/* 主界面 */}
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-        {/* 输入区 */}
         <div className="flex-1 bg-white border-r relative flex flex-col">
           <textarea 
             className="flex-1 w-full p-6 resize-none outline-none font-mono text-gray-700 leading-relaxed"
@@ -228,13 +237,10 @@ export default function XhsMarkdownEditor() {
           </div>
         </div>
 
-        {/* 预览区 */}
         <div className="flex-1 bg-gray-100 overflow-y-auto p-4 md:p-8 flex justify-center">
           <div className="relative w-[375px] bg-gray-800 rounded-[40px] border-[8px] border-gray-800 shadow-2xl shrink-0 mb-10">
-            {/* 手机顶栏 */}
             <div className="h-8 flex justify-center items-center pointer-events-none"><div className="w-20 h-5 bg-black rounded-b-xl"></div></div>
             
-            {/* 内容画布 */}
             <div ref={previewRef} className={`min-h-[600px] w-full ${currentTheme.bgClass} transition-colors relative`} style={{borderRadius: '0 0 32px 32px'}}>
               {showGuides && (
                 <div className="absolute inset-0 z-10 pointer-events-none opacity-30 mix-blend-multiply overflow-hidden">
@@ -247,10 +253,8 @@ export default function XhsMarkdownEditor() {
                 <div className="prose prose-sm max-w-none break-words" dangerouslySetInnerHTML={{__html: html}} />
                 {!html && <div className="text-center py-20 text-gray-300 italic">预览区域</div>}
               </div>
-              
               <div className="h-12 w-full"></div>
             </div>
-            {/* Home条 */}
             <div className="absolute bottom-2 left-1/2 -translate-x-1/2 w-32 h-1 bg-gray-600 rounded-full opacity-50 pointer-events-none"></div>
           </div>
         </div>
@@ -259,18 +263,13 @@ export default function XhsMarkdownEditor() {
       <style>{`
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
-        
-        /* 标题样式 */
         .prose h1 { font-size: 1.8em; margin: 0.6em 0 0.4em; font-weight: 800; line-height: 1.2; }
         .prose h2 { font-size: 1.4em; margin: 1.2em 0 0.6em; font-weight: 700; padding-left: 0.5em; border-left: 4px solid #ef4444; }
         .prose h3 { font-size: 1.2em; margin: 1em 0 0.5em; font-weight: 700; }
-        
-        /* 正文样式 */
         .prose p { margin: 0.6em 0; line-height: 1.75; text-align: justify; }
         .prose ul { padding-left: 1em; list-style: disc; margin: 0.5em 0; }
         .prose ol { padding-left: 1em; list-style: decimal; margin: 0.5em 0; }
         
-        /* 代码块优化 - 关键修复 */
         .prose pre { 
           background-color: #1e293b; 
           color: #e2e8f0; 
@@ -287,16 +286,8 @@ export default function XhsMarkdownEditor() {
           border-radius: 4px; 
           font-size: 0.9em;
         }
-        .prose pre code { 
-          background-color: transparent; 
-          padding: 0; 
-          color: inherit;
-        }
-        
-        /* 引用块 */
+        .prose pre code { background-color: transparent; padding: 0; color: inherit; }
         .prose blockquote { border-left: 3px solid currentColor; padding-left: 1em; margin: 1em 0; font-style: italic; opacity: 0.8; }
-        
-        /* 图片 */
         .prose img { border-radius: 8px; width: 100%; margin: 1em 0; }
       `}</style>
     </div>
@@ -305,16 +296,17 @@ export default function XhsMarkdownEditor() {
 
 const DEFAULT_MARKDOWN = `# 小红书排版神器 
 
-## 修复说明
-现在代码块 (Code Block) 可以正常显示了！
+## 复制功能说明
+由于安全限制，在 StackBlitz **预览窗口**中“复制到剪贴板”可能会报错。
+
+**解决方法：**
+1. 点击右上角的 **Open in New Tab** 在新窗口打开，即可正常复制。
+2. 或者直接部署到 Netlify/Vercel 后使用。
 
 \`\`\`javascript
-function hello() {
-  console.log("Hello, World!");
-}
+// 代码块格式也很完美
+console.log("Hello XHS!");
 \`\`\`
-
-普通文本的**加粗**和*斜体*也一切正常。
 `;
 
 const THEMES = {
