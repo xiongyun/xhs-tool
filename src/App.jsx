@@ -69,18 +69,35 @@ export default function XhsMarkdownEditor() {
     init();
   }, []);
 
-  // 4. 解析 Markdown (修复代码块解析问题)
+  // 4. 解析 Markdown (智能处理：普通文本保留空行，代码块保持原样)
   useEffect(() => {
     if (status === 'ready' && window.marked) {
       // 自动保存
       localStorage.setItem('xhs_content', markdown);
       
-      // 配置 marked
-      // breaks: true 允许单回车换行（GitHub 风格），同时不会破坏代码块
+      // --- 智能空行逻辑 ---
+      // 为了让“连按回车”产生真实间距，同时不破坏代码块格式
+      // 我们先将文本按代码块（```...```）切分
+      const parts = markdown.split(/(```[\s\S]*?```)/g);
+      
+      const processed = parts.map(part => {
+        // 如果是代码块，原样返回
+        if (part.startsWith('```')) return part;
+        
+        // 如果是普通文本，把连续换行转为 <br>
+        // \n{2,} 表示连续2个或更多换行符
+        return part.replace(/\n{2,}/g, (match) => {
+          // 比如按了3次回车，产生2个空行，match.length=3
+          // 我们需要插入 match.length - 1 个 <br>
+          return '\n' + '<br>'.repeat(match.length - 1) + '\n';
+        });
+      }).join('');
+
+      // 配置 marked: breaks:true 确保单次换行也生效
       window.marked.setOptions({ breaks: true, gfm: true });
       
       try {
-        setHtml(window.marked.parse(markdown));
+        setHtml(window.marked.parse(processed));
       } catch (e) {
         console.error("Markdown parse error:", e);
       }
