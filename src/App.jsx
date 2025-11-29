@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// --- 1. 图标组件 ---
+// --- 1. 图标组件 (无外部依赖) ---
 const Icon = ({ path, size = 20, className = "" }) => (
   <svg 
     xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" 
@@ -24,7 +24,16 @@ const Icons = {
   Layout: <><rect width="18" height="18" x="3" y="3" rx="2" ry="2" /><line x1="3" x2="21" y1="9" y2="9" /><line x1="9" x2="9" y1="21" y2="9" /></>
 };
 
-// --- 2. 核心功能组件 ---
+// --- 2. 核心配置常量 ---
+// 严格对齐 9.6:16 (即 1300x2160) 的比例
+const CONFIG = {
+  targetWidth: 1300,
+  targetHeight: 2160,
+  // 宽高比 = 1300 / 2160
+  get aspectRatio() { return this.targetWidth / this.targetHeight; }
+};
+
+// --- 3. 核心功能组件 ---
 export default function XhsMarkdownEditor() {
   const [status, setStatus] = useState('initializing'); 
   const [markdown, setMarkdown] = useState(() => {
@@ -38,7 +47,7 @@ export default function XhsMarkdownEditor() {
   const [copyLabel, setCopyLabel] = useState('复制'); 
   const previewRef = useRef(null);
 
-  // 3. 注入依赖库
+  // 注入依赖库
   useEffect(() => {
     const loadScript = (src, id) => {
       return new Promise((resolve, reject) => {
@@ -65,7 +74,7 @@ export default function XhsMarkdownEditor() {
     init();
   }, []);
 
-  // 4. 解析 Markdown
+  // 解析 Markdown
   useEffect(() => {
     if (status === 'ready' && window.marked) {
       localStorage.setItem('xhs_content', markdown);
@@ -73,6 +82,7 @@ export default function XhsMarkdownEditor() {
       const parts = markdown.split(/(```[\s\S]*?```)/g);
       const processed = parts.map(part => {
         if (part.startsWith('```')) return part;
+        // 智能换行：3个回车才算一个空行，保留标准段落间距
         return part.replace(/\n{3,}/g, (match) => {
           return '\n\n' + '<br>'.repeat(match.length - 2) + '\n\n';
         });
@@ -87,19 +97,30 @@ export default function XhsMarkdownEditor() {
     }
   }, [markdown, status]);
 
-  // 5. 截图核心逻辑
+  // 截图核心逻辑 (精确控制分辨率)
   const capture = async () => {
     if (!previewRef.current || !window.html2canvas) return null;
+    
+    // 临时隐藏参考线以获得纯净截图
     const originalGuides = showGuides;
     setShowGuides(false); 
     await new Promise(r => setTimeout(r, 200)); 
 
     try {
+      // 动态计算缩放比例：确保生成的 Canvas 宽度精确等于 1300px
+      // scale = 目标宽度 / DOM实际宽度
+      const elementWidth = previewRef.current.offsetWidth;
+      const scale = CONFIG.targetWidth / elementWidth;
+
       const canvas = await window.html2canvas(previewRef.current, {
-        scale: 3, 
+        scale: scale, 
         useCORS: true,
-        backgroundColor: null
+        backgroundColor: null,
+        // 稍微调高一点点以防止白边，虽然精确计算理论上不需要
+        width: elementWidth, 
+        windowWidth: elementWidth,
       });
+      
       setShowGuides(originalGuides);
       return canvas;
     } catch (e) {
@@ -109,34 +130,26 @@ export default function XhsMarkdownEditor() {
     }
   };
 
-  // --- 修复后的复制功能 ---
   const handleCopy = async () => {
     setIsProcessing(true);
     setCopyLabel('处理中...');
 
     try {
-      // 1. 环境检测：防止在不支持的浏览器中崩溃
       if (typeof ClipboardItem === 'undefined' || !navigator.clipboard || !navigator.clipboard.write) {
-        throw new Error("当前环境（如StackBlitz预览）不支持直接写入剪贴板，请尝试部署后使用或直接下载。");
+        throw new Error("浏览器不支持，请使用下载功能");
       }
 
       const canvas = await capture();
-      if (!canvas) throw new Error("生成图片失败");
+      if (!canvas) throw new Error("生成失败");
 
-      // 2. 将 canvas 转为 Blob (使用 Promise 包装以防回调地狱)
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-      if (!blob) throw new Error("图片数据转换失败");
+      if (!blob) throw new Error("转换失败");
 
-      // 3. 写入剪贴板
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-      
       setCopyLabel('已复制!');
       setTimeout(() => setCopyLabel('复制'), 2000);
-
     } catch (err) {
-      console.error("复制失败:", err);
-      // 友好提示，而不是崩溃
-      alert(`无法复制：${err.message}\n\n建议：请使用右侧的【保存】按钮下载图片。`);
+      alert(`复制失败: ${err.message}`);
       setCopyLabel('复制');
     } finally {
       setIsProcessing(false);
@@ -149,22 +162,38 @@ export default function XhsMarkdownEditor() {
     if (!canvas) { setIsProcessing(false); return; }
 
     const timestamp = Date.now();
+    
     if (!split) {
+      // 长图模式：直接保存生成的 1300px 宽度的长图
       const link = document.createElement('a');
-      link.download = `xhs-${timestamp}.png`;
+      link.download = `xhs-${timestamp}-full.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
     } else {
-      const pageH = canvas.width * (4/3);
-      const totalPages = Math.ceil(canvas.height / pageH);
+      // 分割模式：严格按照 2160px 高度切分
+      const sourceW = canvas.width; // 应该是 1300
+      // 按照比例计算每页高度：宽 / 比例 = 1300 / (1300/2160) = 2160
+      // 这里直接用 targetHeight 更稳
+      const pageHeight = CONFIG.targetHeight; 
+      const totalPages = Math.ceil(canvas.height / pageHeight);
+
       for (let i = 0; i < totalPages; i++) {
         const c = document.createElement('canvas');
-        c.width = canvas.width;
-        c.height = pageH;
+        c.width = CONFIG.targetWidth;
+        c.height = CONFIG.targetHeight;
         const ctx = c.getContext('2d');
+        
+        // 填充背景色
         ctx.fillStyle = THEMES[theme].bgCode;
         ctx.fillRect(0, 0, c.width, c.height);
-        ctx.drawImage(canvas, 0, i * pageH, canvas.width, pageH, 0, 0, canvas.width, pageH);
+        
+        // 从源 Canvas 截取
+        // 参数: source, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight
+        ctx.drawImage(
+          canvas, 
+          0, i * pageHeight, sourceW, pageHeight, 
+          0, 0, CONFIG.targetWidth, CONFIG.targetHeight
+        );
         
         const link = document.createElement('a');
         link.download = `xhs-${timestamp}-${i+1}.png`;
@@ -173,6 +202,18 @@ export default function XhsMarkdownEditor() {
       }
     }
     setIsProcessing(false);
+  };
+
+  // 动态计算辅助线样式的背景
+  // 在 375px 宽的预览中，参考线的高度应为：375 / (1300/2160) = 623.07... px
+  const getGuideStyle = () => {
+    // 预览容器的固定宽度是 375px (Tailwind w-[375px])
+    const previewWidth = 375; 
+    const guideHeight = previewWidth / CONFIG.aspectRatio;
+    
+    return {
+      background: `repeating-linear-gradient(to bottom, transparent 0, transparent ${guideHeight - 1}px, #ef4444 ${guideHeight}px)`
+    };
   };
 
   if (status === 'initializing') return <div className="flex h-screen items-center justify-center text-gray-500 gap-2">正在初始化引擎...</div>;
@@ -213,7 +254,7 @@ export default function XhsMarkdownEditor() {
 
              <button onClick={()=>handleDownload(false)} disabled={isProcessing} className="flex items-center gap-1 bg-gray-800 text-white px-3 py-1.5 rounded hover:bg-gray-700 text-sm">
                {isProcessing ? <Icon path={Icons.Loader} className="animate-spin"/> : <Icon path={Icons.Download}/>}
-               <span className="hidden sm:inline">保存</span>
+               <span className="hidden sm:inline">长图</span>
              </button>
              <button onClick={()=>handleDownload(true)} disabled={isProcessing} className="flex items-center gap-1 bg-red-500 text-white px-3 py-1.5 rounded hover:bg-red-600 text-sm shadow-sm">
                {isProcessing ? <Icon path={Icons.Loader} className="animate-spin"/> : <Icon path={Icons.Split}/>}
@@ -232,7 +273,7 @@ export default function XhsMarkdownEditor() {
             onChange={e => setMarkdown(e.target.value)}
           />
           <div className="px-4 py-2 bg-gray-50 text-xs text-gray-400 flex justify-between">
-            <span>支持 Markdown</span>
+            <span>支持 Markdown & Code</span>
             <span>{markdown.length} 字</span>
           </div>
         </div>
@@ -241,11 +282,16 @@ export default function XhsMarkdownEditor() {
           <div className="relative w-[375px] bg-gray-800 rounded-[40px] border-[8px] border-gray-800 shadow-2xl shrink-0 mb-10">
             <div className="h-8 flex justify-center items-center pointer-events-none"><div className="w-20 h-5 bg-black rounded-b-xl"></div></div>
             
+            {/* 内容画布 */}
             <div ref={previewRef} className={`min-h-[600px] w-full ${currentTheme.bgClass} transition-colors relative`} style={{borderRadius: '0 0 32px 32px'}}>
               {showGuides && (
-                <div className="absolute inset-0 z-10 pointer-events-none opacity-30 mix-blend-multiply overflow-hidden">
-                  <div className="w-full h-full border-b border-dashed border-red-500" style={{background: 'repeating-linear-gradient(to bottom, transparent 0, transparent 499px, red 500px)'}} />
-                  <div className="absolute top-4 right-2 text-[10px] text-red-500 bg-white/80 px-1 rounded">3:4 参考线</div>
+                <div 
+                  className="absolute inset-0 z-10 pointer-events-none opacity-30 mix-blend-multiply overflow-hidden"
+                >
+                  <div className="w-full h-full border-b border-dashed border-red-500" style={getGuideStyle()} />
+                  <div className="absolute top-4 right-2 text-[10px] text-red-500 bg-white/80 px-1 rounded shadow-sm border border-red-100">
+                    1300 x 2160 (9.6:16)
+                  </div>
                 </div>
               )}
               
@@ -271,20 +317,11 @@ export default function XhsMarkdownEditor() {
         .prose ol { padding-left: 1em; list-style: decimal; margin: 0.5em 0; }
         
         .prose pre { 
-          background-color: #1e293b; 
-          color: #e2e8f0; 
-          padding: 1em; 
-          border-radius: 8px; 
-          overflow-x: auto; 
-          margin: 1em 0;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          background-color: #1e293b; color: #e2e8f0; padding: 1em; border-radius: 8px; 
+          overflow-x: auto; margin: 1em 0; font-family: monospace;
         }
         .prose code { 
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-          background-color: rgba(0,0,0,0.05); 
-          padding: 0.2em 0.4em; 
-          border-radius: 4px; 
-          font-size: 0.9em;
+          font-family: monospace; background-color: rgba(0,0,0,0.05); padding: 0.2em 0.4em; border-radius: 4px; font-size: 0.9em;
         }
         .prose pre code { background-color: transparent; padding: 0; color: inherit; }
         .prose blockquote { border-left: 3px solid currentColor; padding-left: 1em; margin: 1em 0; font-style: italic; opacity: 0.8; }
@@ -294,18 +331,17 @@ export default function XhsMarkdownEditor() {
   );
 }
 
-const DEFAULT_MARKDOWN = `# 小红书排版神器 
+const DEFAULT_MARKDOWN = `# 小红书排版助手
 
-## 复制功能说明
-由于安全限制，在 StackBlitz **预览窗口**中“复制到剪贴板”可能会报错。
+## 分割线升级说明
+现在，分割线位置完全**所见即所得**！
 
-**解决方法：**
-1. 点击右上角的 **Open in New Tab** 在新窗口打开，即可正常复制。
-2. 或者直接部署到 Netlify/Vercel 后使用。
+* 尺寸锁定：1300 x 2160 像素
+* 比例锁定：9.6 : 16
+* 辅助线：红线切在哪里，图片就切在哪里。
 
 \`\`\`javascript
-// 代码块格式也很完美
-console.log("Hello XHS!");
+const highResolution = true;
 \`\`\`
 `;
 
