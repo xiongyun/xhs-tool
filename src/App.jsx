@@ -102,11 +102,11 @@ export default function XhsMarkdownEditor() {
           return '\n\n' + '<br>'.repeat(match.length - 2) + '\n\n';
         });
 
-        // --- CJK 中文标点加粗修复补丁 ---
-        // 问题：marked.js 有时会将 `**加粗**“` 识别为无效的加粗
-        // 解决：在 **内容** 和 “ 或 ” 之间插入一个零宽空格 (\u200B)
-        // \u200B 是不可见的，但能让解析器识别出词边界
-        temp = temp.replace(/(\*\*.+?\*\*)(?=[“”])/g, '$1\u200B');
+        // --- 强力加粗修复 (关键修改) ---
+        // 直接将 **内容** 替换为 <strong>内容</strong> 标签
+        // 这样无论后面跟的是中文引号 “ 还是英文引号 "，浏览器都能正确识别加粗
+        // 正则解释：匹配成对的 **，且内部不含换行符或星号
+        temp = temp.replace(/(?<!\\)\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
 
         return temp;
       }).join('');
