@@ -96,10 +96,19 @@ export default function XhsMarkdownEditor() {
       const parts = markdown.split(/(```[\s\S]*?```)/g);
       const processed = parts.map(part => {
         if (part.startsWith('```')) return part;
-        // 智能换行逻辑
-        return part.replace(/\n{3,}/g, (match) => {
+        
+        // 智能换行逻辑：3个回车才算一个空行
+        let temp = part.replace(/\n{3,}/g, (match) => {
           return '\n\n' + '<br>'.repeat(match.length - 2) + '\n\n';
         });
+
+        // --- CJK 中文标点加粗修复补丁 ---
+        // 问题：marked.js 有时会将 `**加粗**“` 识别为无效的加粗
+        // 解决：在 **内容** 和 “ 或 ” 之间插入一个零宽空格 (\u200B)
+        // \u200B 是不可见的，但能让解析器识别出词边界
+        temp = temp.replace(/(\*\*.+?\*\*)(?=[“”])/g, '$1\u200B');
+
+        return temp;
       }).join('');
 
       window.marked.setOptions({ breaks: true, gfm: true });
@@ -350,16 +359,15 @@ export default function XhsMarkdownEditor() {
 
 const DEFAULT_MARKDOWN = `# 小红书排版助手
 
-## 数学公式支持
-现在支持 LaTeX 符号了：
+## 中文符号测试
+现在 **加粗**“引号” 也能正常显示了！
 
-* 箭头：$\\rightarrow$ 或 $\\Rightarrow$
-* 复杂公式：$$E=mc^2$$
+## 数学公式
+$$E=mc^2$$
 
-## 分割线升级说明
+## 分割线升级
 * 尺寸锁定：1300 x 2160 像素
 * 比例锁定：9.6 : 16
-* 辅助线：红线切在哪里，图片就切在哪里。
 `;
 
 const THEMES = {
